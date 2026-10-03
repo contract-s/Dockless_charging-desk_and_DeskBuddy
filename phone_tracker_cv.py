@@ -38,7 +38,7 @@ DESK_DEPTH_CM = 45.72            # 18 in
 DARK_THRESHOLD = 70              # gray level below this counts as "dark" (0-255); slider tunes it
 # Adaptive darkness: also count a pixel as dark if it is LOCAL_DELTA darker than the local
 # background (handles glare / uneven light across the pane). Set ADAPTIVE = False to disable.
-ADAPTIVE = True
+ADAPTIVE = False
 LOCAL_DELTA = 50                 # how much darker than the surroundings (0-255)
 LOCAL_MAX = 150                  # ...but never count pixels brighter than this
 MIN_CONTOUR_PX = 200             # ignore tiny blobs
