@@ -28,7 +28,7 @@ from ultralytics import YOLO
 # Config
 # ---------------------------------------------------------------------------
 
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
 # Logitech C270. Use a 4:3 mode: the 18x24 in pane is also 4:3, so the full
 # frame maps onto the pane with nothing wasted. 720p (16:9) crops the top and
 # bottom of the sensor, which would force the camera much higher to see the
@@ -38,7 +38,17 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 MODEL_NAME = "yolov8n.pt"          # nano model: smallest, fastest, good first choice
 CELL_PHONE_CLASS_ID = 67           # COCO class index for "cell phone"
-CONFIDENCE_THRESHOLD = 0.4
+CONFIDENCE_THRESHOLD = 0.5
+
+# False-positive filters (tune using the debug label on the preview)
+MIN_BOX_FRAC = 0.01     # box area / frame area must be at least this
+MAX_BOX_FRAC = 0.20     # ...and at most this
+MIN_ASPECT = 1.2        # long side / short side of the box
+MAX_ASPECT = 3.2
+PANE_MARGIN_CM = 2.0    # ignore detections centered outside the pane (+margin)
+CONFIRM_FRAMES = 3      # must be seen this many frames in a row, in one spot
+CONFIRM_RADIUS_CM = 4.0
+MISS_TOLERANCE = 2      # missed frames allowed before the streak resets
 CALIBRATION_FILE = "calibration.json"
 
 # Real-world size in cm of the area you click during calibration.
@@ -142,6 +152,59 @@ def pixel_to_desk(H, px, py):
 # Smoothing
 # ---------------------------------------------------------------------------
  
+class TargetConfirmer:
+    """Only trust a detection after it shows up in the same spot several frames running."""
+
+    def __init__(self):
+        self.pos = None
+        self.streak = 0
+        self.misses = 0
+
+    def update(self, x, y):
+        self.misses = 0
+        if (self.pos is not None
+                and abs(x - self.pos[0]) <= CONFIRM_RADIUS_CM
+                and abs(y - self.pos[1]) <= CONFIRM_RADIUS_CM):
+            self.streak += 1
+        else:
+            self.streak = 1
+        self.pos = (x, y)
+        return (x, y) if self.streak >= CONFIRM_FRAMES else None
+
+    def miss(self):
+        self.misses += 1
+        if self.misses > MISS_TOLERANCE:
+            self.streak = 0
+            self.pos = None
+
+
+def pick_phone(boxes, H, frame_shape):
+    """Return the best detection that passes the size/shape/location filters, else None."""
+    fh, fw = frame_shape[:2]
+    best, best_conf = None, -1.0
+    for b in boxes:
+        x1, y1, x2, y2 = b.xyxy[0].tolist()
+        w, h = x2 - x1, y2 - y1
+        if w <= 0 or h <= 0:
+            continue
+        frac = (w * h) / (fw * fh)
+        aspect = max(w, h) / min(w, h)
+        if not (MIN_BOX_FRAC <= frac <= MAX_BOX_FRAC):
+            continue
+        if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
+            continue
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        dx, dy = pixel_to_desk(H, cx, cy)
+        if not (-PANE_MARGIN_CM <= dx <= DESK_WIDTH_CM + PANE_MARGIN_CM
+                and -PANE_MARGIN_CM <= dy <= DESK_DEPTH_CM + PANE_MARGIN_CM):
+            continue
+        conf = float(b.conf[0])
+        if conf > best_conf:
+            best_conf = conf
+            best = ((x1, y1, x2, y2), cx, cy, dx, dy)
+    return best
+
+
 class PositionSmoother:
     def __init__(self, window=SMOOTH_WINDOW):
         self.window = window
@@ -199,6 +262,7 @@ def main():
     H = load_calibration()
     model = YOLO(MODEL_NAME)
     smoother = PositionSmoother()
+    confirmer = TargetConfirmer()
  
     ser = open_serial() if SEND_SERIAL else None
     last_sent = None
@@ -219,15 +283,15 @@ def main():
             boxes = results[0].boxes
             target_desk = None
  
-            if len(boxes) > 0:
-                # take the highest-confidence detection
-                best = boxes[boxes.conf.argmax()]
-                x1, y1, x2, y2 = best.xyxy[0].tolist()
-                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
- 
-                desk_x, desk_y = pixel_to_desk(H, cx, cy)
-                desk_x, desk_y = smoother.update(desk_x, desk_y)
-                target_desk = (desk_x, desk_y)
+            best = pick_phone(boxes, H, frame.shape) if len(boxes) > 0 else None
+            if best is None:
+                confirmer.miss()
+            else:
+                (x1, y1, x2, y2), cx, cy, desk_x, desk_y = best
+                confirmed = confirmer.update(desk_x, desk_y)
+                if confirmed is not None:
+                    desk_x, desk_y = smoother.update(*confirmed)
+                    target_desk = (desk_x, desk_y)
  
                 if not args.no_display:
                     cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
