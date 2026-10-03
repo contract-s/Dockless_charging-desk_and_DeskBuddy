@@ -61,3 +61,79 @@ SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 115200
 
 
+# ---------------------------------------------------------------------------
+# Calibration: map pixel coordinates -> real desk coordinates (cm)
+# ---------------------------------------------------------------------------
+
+def run_calibration(cap):
+    """
+    Click the 4 corners of the desk's reachable area in the live feed, in this
+    order: top-left, top-right, bottom-right, bottom-left (as seen on screen).
+    These get paired with the real-world rectangle (0,0) .. (DESK_WIDTH_CM, DESK_DEPTH_CM)
+    to compute a homography.
+    """
+    clicked_points = []
+
+    def on_click(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and len(clicked_points) < 4:
+            clicked_points.append((x, y))
+            print(f"  point {len(clicked_points)}: ({x}, {y})")
+
+    cv2.namedWindow("Calibration")
+    cv2.setMouseCallback("Calibration", on_click)
+
+    print("Click the 4 corners of the desk's charging area, in order:")
+    print("  1) top-left  2) top-right  3) bottom-right  4) bottom-left")
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            continue
+
+        for i, pt in enumerate(clicked_points):
+            cv2.circle(frame, pt, 6, (0, 255, 0), -1)
+            cv2.putText(frame, str(i + 1), (pt[0] + 8, pt[1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        cv2.imshow("Calibration", frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or len(clicked_points) == 4:
+            break
+
+    cv2.destroyWindow("Calibration")
+
+    if len(clicked_points) != 4:
+        raise RuntimeError("Calibration needs exactly 4 points — try again.")
+
+    pixel_pts = np.array(clicked_points, dtype=np.float32)
+    real_pts = np.array([
+        [0, 0],
+        [DESK_WIDTH_CM, 0],
+        [DESK_WIDTH_CM, DESK_DEPTH_CM],
+        [0, DESK_DEPTH_CM],
+    ], dtype=np.float32)
+
+    H, _ = cv2.findHomography(pixel_pts, real_pts)
+
+    with open(CALIBRATION_FILE, "w") as f:
+        json.dump({"homography": H.tolist()}, f)
+
+    print(f"Saved calibration to {CALIBRATION_FILE}")
+    return H
+
+
+def load_calibration():
+    if not os.path.exists(CALIBRATION_FILE):
+        raise FileNotFoundError(
+            f"No {CALIBRATION_FILE} found — run with --calibrate first."
+        )
+    with open(CALIBRATION_FILE) as f:
+        data = json.load(f)
+    return np.array(data["homography"])
+
+
+def pixel_to_desk(H, px, py):
+    p = np.array([px, py, 1.0])
+    dp = H @ p
+    dp /= dp[2]
+    return float(dp[0]), float(dp[1])
