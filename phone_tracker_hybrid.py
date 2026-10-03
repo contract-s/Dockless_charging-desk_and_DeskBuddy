@@ -46,8 +46,9 @@ MIN_ASPECT = 1.2
 MAX_ASPECT = 3.2
 CONFIRM_YOLO = 2
 CONFIRM_CV_ONLY = 12
-CONFIRM_RADIUS_CM = 4.0
-MISS_TOLERANCE = 3
+CONFIRM_RADIUS_CM = 5.0
+MISS_TOLERANCE = 8          # frames a detection may drop out before the streak resets
+HOLD_FRAMES = 15            # keep reporting the last confirmed target this long after losing it
 
 PROFILE_FILE = "phone_profile.json"
 PROFILE_TOL = 0.12
@@ -175,6 +176,7 @@ def main():
     confirmer, smoother = Confirmer(), ptc.PositionSmoother()
     ser = ptc.open_serial() if ptc.SEND_SERIAL else None
     last_sent, show_mask = None, False
+    held, hold_left = None, 0
     win = "Phone Tracking (hybrid)"
 
     cv2.namedWindow(win)
@@ -200,6 +202,10 @@ def main():
                 confirmed = confirmer.update(cx, cy, need)
                 if confirmed is not None:
                     target = smoother.update(*confirmed)
+                    held, hold_left = target, HOLD_FRAMES
+            if target is None and held is not None and hold_left > 0:
+                hold_left -= 1
+                target, source = held, "hold"
 
             for d in yolo:
                 x1, y1, x2, y2 = map(int, d["box_px"])
@@ -215,6 +221,12 @@ def main():
                 col = (0, 255, 0) if accepted else (0, 0, 255)
                 cv2.polylines(frame, [box], True, col, 2)
                 cv2.putText(frame, label, tuple(box[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
+            if target is None:
+                info = (f"searching  yolo:{len(yolo)} cv:{1 if cv_best else 0} "
+                        f"streak:{confirmer.streak} misses:{confirmer.misses}")
+                if choice is not None:
+                    info += f" via {choice[1]} need {choice[2]}"
+                cv2.putText(frame, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
             if target is not None:
                 cv2.putText(frame, f"[{source}] target ({target[0]:.1f}, {target[1]:.1f}) cm",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)

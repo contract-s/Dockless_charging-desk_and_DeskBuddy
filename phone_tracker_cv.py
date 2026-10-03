@@ -36,6 +36,11 @@ DESK_WIDTH_CM = 60.96            # 24 in
 DESK_DEPTH_CM = 45.72            # 18 in
 
 DARK_THRESHOLD = 70              # gray level below this counts as "dark" (0-255); slider tunes it
+# Adaptive darkness: also count a pixel as dark if it is LOCAL_DELTA darker than the local
+# background (handles glare / uneven light across the pane). Set ADAPTIVE = False to disable.
+ADAPTIVE = True
+LOCAL_DELTA = 50                 # how much darker than the surroundings (0-255)
+LOCAL_MAX = 150                  # ...but never count pixels brighter than this
 MIN_CONTOUR_PX = 200             # ignore tiny blobs
 
 # Phone size window in centimetres (covers small phones up to big phones + case)
@@ -83,7 +88,15 @@ def find_phone(frame, H, dark_thresh):
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    mask = (gray < dark_thresh).astype(np.uint8) * 255
+    dark = gray < dark_thresh
+    if ADAPTIVE:
+        small = cv2.resize(gray, (gray.shape[1] // 4, gray.shape[0] // 4), interpolation=cv2.INTER_AREA)
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))   # ~124 px: bigger than a phone's short side
+        bg = cv2.morphologyEx(small, cv2.MORPH_CLOSE, k)
+        bg = cv2.GaussianBlur(bg, (0, 0), 5)
+        bg = cv2.resize(bg, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
+        dark = dark | ((gray.astype(np.int16) < bg.astype(np.int16) - LOCAL_DELTA) & (gray < LOCAL_MAX))
+    mask = dark.astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
                             cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
