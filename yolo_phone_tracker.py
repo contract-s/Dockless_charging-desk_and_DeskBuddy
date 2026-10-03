@@ -155,4 +155,17 @@ class PositionSmoother:
         ys = [p[1] for p in self.history]
         return sum(xs) / len(xs), sum(ys) / len(ys)
  
+# ---------------------------------------------------------------------------
+# Serial (optional — only used if SEND_SERIAL = True)
+# ---------------------------------------------------------------------------
+ 
+def open_serial():
+    import serial
+    return serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
+ 
+ 
+def send_target(ser, x_cm, y_cm):
+    if ser is None:
+        return
+    ser.write(f"{x_cm:.1f},{y_cm:.1f}\n".encode())
  
