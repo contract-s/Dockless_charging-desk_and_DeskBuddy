@@ -38,7 +38,7 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 MODEL_NAME = "yolov8n.pt"          # nano model: smallest, fastest, good first choice
 CELL_PHONE_CLASS_ID = 67           # COCO class index for "cell phone"
-CONFIDENCE_THRESHOLD = 0.5
+CONFIDENCE_THRESHOLD = 0.35
 
 # False-positive filters (tune using the debug label on the preview)
 MIN_BOX_FRAC = 0.01     # box area / frame area must be at least this
@@ -46,7 +46,8 @@ MAX_BOX_FRAC = 0.20     # ...and at most this
 MIN_ASPECT = 1.2        # long side / short side of the box
 MAX_ASPECT = 3.2
 PANE_MARGIN_CM = 2.0    # ignore detections centered outside the pane (+margin)
-CONFIRM_FRAMES = 3      # must be seen this many frames in a row, in one spot
+DEBUG_FILTERS = True    # print why detections get rejected
+CONFIRM_FRAMES = 2      # must be seen this many frames in a row, in one spot
 CONFIRM_RADIUS_CM = 4.0
 MISS_TOLERANCE = 2      # missed frames allowed before the streak resets
 CALIBRATION_FILE = "calibration.json"
@@ -189,16 +190,25 @@ def pick_phone(boxes, H, frame_shape):
             continue
         frac = (w * h) / (fw * fh)
         aspect = max(w, h) / min(w, h)
-        if not (MIN_BOX_FRAC <= frac <= MAX_BOX_FRAC):
-            continue
-        if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
-            continue
         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
         dx, dy = pixel_to_desk(H, cx, cy)
-        if not (-PANE_MARGIN_CM <= dx <= DESK_WIDTH_CM + PANE_MARGIN_CM
-                and -PANE_MARGIN_CM <= dy <= DESK_DEPTH_CM + PANE_MARGIN_CM):
-            continue
         conf = float(b.conf[0])
+
+        reason = None
+        if not (MIN_BOX_FRAC <= frac <= MAX_BOX_FRAC):
+            reason = "size"
+        elif not (MIN_ASPECT <= aspect <= MAX_ASPECT):
+            reason = "aspect"
+        elif not (-PANE_MARGIN_CM <= dx <= DESK_WIDTH_CM + PANE_MARGIN_CM
+                  and -PANE_MARGIN_CM <= dy <= DESK_DEPTH_CM + PANE_MARGIN_CM):
+            reason = "outside pane"
+
+        if DEBUG_FILTERS:
+            status = f"REJECT({reason})" if reason else "ok"
+            print(f"det conf={conf:.2f} area={frac:.3f} aspect={aspect:.2f} "
+                  f"desk=({dx:.1f},{dy:.1f}) -> {status}")
+        if reason:
+            continue
         if conf > best_conf:
             best_conf = conf
             best = ((x1, y1, x2, y2), cx, cy, dx, dy)
