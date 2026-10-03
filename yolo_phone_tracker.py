@@ -169,3 +169,104 @@ def send_target(ser, x_cm, y_cm):
         return
     ser.write(f"{x_cm:.1f},{y_cm:.1f}\n".encode())
  
+# ---------------------------------------------------------------------------
+# Main detection loop
+# ---------------------------------------------------------------------------
+ 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--calibrate", action="store_true",
+                         help="Run the 4-point calibration step and exit.")
+    parser.add_argument("--no-display", action="store_true",
+                         help="Run headless (no preview window) — use on the Pi.")
+    args = parser.parse_args()
+ 
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open webcam — check CAMERA_INDEX.")
+ 
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"Camera resolution: {actual_w}x{actual_h}")
+ 
+    if args.calibrate:
+        run_calibration(cap)
+        cap.release()
+        return
+ 
+    H = load_calibration()
+    model = YOLO(MODEL_NAME)
+    smoother = PositionSmoother()
+ 
+    ser = open_serial() if SEND_SERIAL else None
+    last_sent = None
+ 
+    fps_counter, fps_timer, fps_value = 0, time.time(), 0.0
+ 
+    print("Tracking started. Press 'q' in the preview window to quit (or Ctrl+C if headless).")
+ 
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                continue
+ 
+            results = model(frame, classes=[CELL_PHONE_CLASS_ID],
+                             conf=CONFIDENCE_THRESHOLD, verbose=False)
+ 
+            boxes = results[0].boxes
+            target_desk = None
+ 
+            if len(boxes) > 0:
+                # take the highest-confidence detection
+                best = boxes[boxes.conf.argmax()]
+                x1, y1, x2, y2 = best.xyxy[0].tolist()
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+ 
+                desk_x, desk_y = pixel_to_desk(H, cx, cy)
+                desk_x, desk_y = smoother.update(desk_x, desk_y)
+                target_desk = (desk_x, desk_y)
+ 
+                if not args.no_display:
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    cv2.circle(frame, (int(cx), int(cy)), 5, (0, 0, 255), -1)
+                    cv2.putText(frame, f"desk: ({desk_x:.1f}, {desk_y:.1f}) cm",
+                                (int(x1), int(y1) - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+ 
+            if target_desk is not None:
+                if (last_sent is None
+                        or abs(target_desk[0] - last_sent[0]) > MOVE_TOLERANCE_CM
+                        or abs(target_desk[1] - last_sent[1]) > MOVE_TOLERANCE_CM):
+                    last_sent = target_desk
+                    send_target(ser, *target_desk)
+                    print(f"target -> x={target_desk[0]:.1f}cm  y={target_desk[1]:.1f}cm")
+ 
+            # simple FPS counter, printed once a second
+            fps_counter += 1
+            if time.time() - fps_timer >= 1.0:
+                fps_value = fps_counter / (time.time() - fps_timer)
+                fps_counter, fps_timer = 0, time.time()
+                if args.no_display:
+                    print(f"FPS: {fps_value:.1f}")
+ 
+            if not args.no_display:
+                cv2.putText(frame, f"FPS: {fps_value:.1f}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                cv2.imshow("Phone Tracking", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+ 
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        if ser is not None:
+            ser.close()
+ 
+ 
+if __name__ == "__main__":
+    main()
