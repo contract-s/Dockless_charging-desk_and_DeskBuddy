@@ -182,13 +182,14 @@ def main():
     cv2.namedWindow(win)
     cv2.createTrackbar("dark", win, ptc.DARK_THRESHOLD, 255, lambda v: None)
     print("Learned phone size:", profile if profile else "none (CV-only path disabled)")
-    print("Keys: q quit | l learn phone size | c clear | m mask")
+    print("Keys: q quit | l learn phone size | c clear | m mask | s save debug snapshot")
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 continue
+            raw_frame = frame.copy()
             dark = max(1, cv2.getTrackbarPos("dark", win))
             yolo = yolo_detections(model, frame, H)
             cv_best, cands, mask = ptc.find_phone(frame, H, dark)
@@ -237,6 +238,7 @@ def main():
                     ptc.send_target(ser, *target)
                     print(f"[{source}] target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
 
+            overlay = frame.copy()
             cv2.imshow(win, frame)
             if show_mask:
                 cv2.imshow("Dark mask", mask)
@@ -256,6 +258,13 @@ def main():
                     print("Learned phone size:", profile)
                 else:
                     print("Nothing to learn from: no green CV box right now.")
+            elif key == ord("s"):
+                import time as _t
+                tag = _t.strftime("%H%M%S")
+                cv2.imwrite(f"snap_{tag}_overlay.png", overlay)
+                cv2.imwrite(f"snap_{tag}_mask.png", mask)
+                cv2.imwrite(f"snap_{tag}_raw.png", raw_frame)
+                print(f"saved snap_{tag}_raw.png / _overlay.png / _mask.png (dark={dark}, adaptive={ptc.ADAPTIVE})")
             elif key == ord("c"):
                 profile = None
                 clear_profile()
