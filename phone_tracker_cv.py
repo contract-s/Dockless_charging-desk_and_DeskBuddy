@@ -50,8 +50,8 @@ MISS_TOLERANCE = 3
 SMOOTH_WINDOW = 5
 MOVE_TOLERANCE_CM = 1.5
 
-SEND_SERIAL = False
-SERIAL_PORT = "/dev/ttyUSB0"
+SEND_SERIAL = False              # True = actually move the charger (home first!)
+SERIAL_PORT = "auto"           # "auto" finds the ESP32; or e.g. /dev/cu.usbserial-0001
 SERIAL_BAUD = 115200
 
 
@@ -158,13 +158,14 @@ class PositionSmoother:
 
 
 def open_serial():
-    import serial
-    return serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
+    """Connect to the gantry controller and home it. Returns a Gantry (has .goto_desk and .close)."""
+    import grbl_controller
+    return grbl_controller.open_gantry(port=SERIAL_PORT, auto_home=True)
 
 
 def send_target(ser, x_cm, y_cm):
     if ser is not None:
-        ser.write(f"{x_cm:.1f},{y_cm:.1f}\n".encode())
+        ser.goto_desk(x_cm, y_cm)
 
 
 # ---------------------------------------------------------------------------
