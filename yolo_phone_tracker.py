@@ -137,3 +137,22 @@ def pixel_to_desk(H, px, py):
     dp = H @ p
     dp /= dp[2]
     return float(dp[0]), float(dp[1])
+
+# ---------------------------------------------------------------------------
+# Smoothing
+# ---------------------------------------------------------------------------
+ 
+class PositionSmoother:
+    def __init__(self, window=SMOOTH_WINDOW):
+        self.window = window
+        self.history = []
+ 
+    def update(self, x, y):
+        self.history.append((x, y))
+        if len(self.history) > self.window:
+            self.history.pop(0)
+        xs = [p[0] for p in self.history]
+        ys = [p[1] for p in self.history]
+        return sum(xs) / len(xs), sum(ys) / len(ys)
+ 
+ 
