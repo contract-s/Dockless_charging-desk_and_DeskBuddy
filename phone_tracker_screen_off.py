@@ -36,8 +36,8 @@ YOLO_IMGSZ = 640            # try 960 if YOLO misses a lit phone
 STRONG_CONF = 0.35
 WEAK_CONF = 0.08
 # YOLO boxes are axis-aligned, so a rotated phone's box is larger than the phone
-YOLO_LONG_CM = (6.0, 30.0)
-YOLO_SHORT_CM = (3.0, 22.0)
+YOLO_LONG_CM = (8.0, 25.0)
+YOLO_SHORT_CM = (4.0, 15.0)
 
 CONFIRM_YOLO = 3
 CONFIRM_CV_ONLY = 12
@@ -50,7 +50,6 @@ ALLOW_CV_ONLY_WITHOUT_PROFILE = False   # leave False to avoid false positives u
 
 DEFAULT_LONG = ptc.PHONE_LONG_CM
 DEFAULT_SHORT = ptc.PHONE_SHORT_CM
-LAST_REJECTED = []   # YOLO boxes rejected by the size/pane filter (drawn in magenta)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +60,6 @@ def yolo_detections(model, frame, H):
     res = model(frame, classes=[CELL_PHONE_CLASS_ID], conf=WEAK_CONF,
                 imgsz=YOLO_IMGSZ, verbose=False)[0]
     dets = []
-    LAST_REJECTED.clear()
     for b in res.boxes:
         x1, y1, x2, y2 = b.xyxy[0].tolist()
         corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
@@ -76,10 +74,6 @@ def yolo_detections(model, frame, H):
                 and YOLO_SHORT_CM[0] <= short_ <= YOLO_SHORT_CM[1] and in_pane):
             dets.append(dict(conf=float(b.conf[0]), box_px=(x1, y1, x2, y2),
                              center_cm=(float(center_cm[0]), float(center_cm[1]))))
-        else:
-            why = "outside pane" if not in_pane else "size"
-            LAST_REJECTED.append(((x1, y1, x2, y2),
-                                  f"yolo REJECT({why}) {float(b.conf[0]):.2f} {long_:.1f}x{short_:.1f}cm"))
     return dets
 
 
@@ -192,10 +186,6 @@ def main():
                 cv2.rectangle(frame, (x1, y1), (x2, y2), col, 1)
                 cv2.putText(frame, f"yolo {d['conf']:.2f}", (x1, y2 + 14),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
-            for (rx1, ry1, rx2, ry2), rl in LAST_REJECTED:
-                cv2.rectangle(frame, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (255, 0, 255), 1)
-                cv2.putText(frame, rl, (int(rx1), max(12, int(ry1) - 4)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1)
             for box, label, accepted in cands:
                 col = (0, 255, 0) if accepted else (0, 0, 255)
                 cv2.polylines(frame, [box], True, col, 2)
