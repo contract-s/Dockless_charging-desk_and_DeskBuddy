@@ -1,0 +1,65 @@
+﻿esphome:
+  name: superdesk
+
+esp32:
+  board: esp32-c6-devkitc-1
+  variant: esp32c6
+  framework:
+    type: esp-idf
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+
+# Also send the WILI* lines over the 20-pin Orca header so the FREE-WILi can read them
+# (enable_uart_events) when the Bottlenose USB-C isn't plugged into the laptop.
+# Header uses the C6's UART0 pins (U0TXD=GPIO16, U0RXD=GPIO17) -- the FREE-WILi flashes
+# the Bottlenose's ROM bootloader over them. The FREE-WILi docs' table lists TX/RX the
+# other way round; if nothing arrives on the FREE-WILi, swap these two pins.
+uart:
+  id: orca_uart
+  tx_pin: GPIO16
+  rx_pin: GPIO17
+  baud_rate: 115200
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/wonderslug/esphome-ancs
+      ref: master
+    components: [ancs]
+  # Local shim: re-includes ESP-IDF's `bt` component (excluded by default in ESPHome 2026.9+)
+  - source:
+      type: local
+      path: components
+    components: [ancs_bt]
+
+ancs_bt:
+
+ancs:
+  id: my_ancs
+  name: "SuperDesk"
+  fetch_attributes: [app_id, title, message]
+  on_connect:
+    - logger.log:
+        level: INFO
+        format: "WILICONN|%s"
+        args: [device_name.c_str()]
+    - lambda: 'id(orca_uart).write_str(("WILICONN|" + device_name + "\n").c_str());'
+  on_disconnect:
+    - logger.log:
+        level: INFO
+        format: "WILIDISC|%s"
+        args: [device_name.c_str()]
+    - lambda: 'id(orca_uart).write_str(("WILIDISC|" + device_name + "\n").c_str());'
+  on_notification_attributes:
+    - logger.log:
+        level: INFO
+        format: "WILIMSG|%s|%s|%s"
+        args: [app_id.c_str(), title.c_str(), message.c_str()]
+    - lambda: |-
+        // One line per message on the header: flatten any newlines in the text.
+        std::string line = "WILIMSG|" + app_id + "|" + title + "|" + message;
+        for (auto &c : line) if (c == '\n' || c == '\r') c = ' ';
+        line += "\n";
+        id(orca_uart).write_str(line.c_str());

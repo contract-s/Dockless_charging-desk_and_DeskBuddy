@@ -1,0 +1,6 @@
+.env
+.esphome/
+.venv/
+vosk-model-*/
+music/
+*.wav
