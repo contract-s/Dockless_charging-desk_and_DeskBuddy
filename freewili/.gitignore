@@ -1,4 +1,6 @@
 .env
+contacts.json
+node_modules/
 .esphome/
 .venv/
 vosk-model-*/
