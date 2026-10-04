@@ -66,12 +66,12 @@ ENERGY_FILE = "energy.json"
 
 # FREE-WILi panel. Button names as reported by freewili.read_all_buttons() (lower-case colour).
 FREEWILI_BUTTONS = {
-    "green": "previous",          # previous song   ("push_to_talk" if ENABLE_VOICE)
-    "yellow": "toggle_music",     # play / pause
-    "blue": "skip",               # next song
+    "green": "follow_phone",      # bring the charger to the phone now   ("push_to_talk" if ENABLE_VOICE)
+    "yellow": "energy_report",    # how much energy the desk has saved
+    "blue": "phone_status",       # where is the phone / is it charging
     "red": "toggle_follow",       # park the charger / follow the phone again
-    "gray": "play_music",         # start DEFAULT_PLAYLIST_QUERY
-    "white": "play_music",        # read_all_buttons() calls the 5th button White
+    "gray": "park_charger",       # send the charger home
+    "white": "park_charger",      # read_all_buttons() calls the 5th button White
 }
 KNOCK_G = 1.8                # accelerometer spike (in g) that counts as a knock
 KNOCK_WINDOW_S = 0.6         # two knocks within this = start listening

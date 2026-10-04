@@ -1,10 +1,10 @@
 """
 freewili_panel.py  —  the FREE-WILi as the desk's control panel.
 
-    buttons   green = previous song    yellow = play/pause     blue = next song
-              red   = park / follow    gray   = start the default playlist   (see config.FREEWILI_BUTTONS)
+    buttons   green = bring charger to phone    yellow = energy saved    blue = phone status
+              red   = park / follow               gray   = park the charger   (see config.FREEWILI_BUTTONS)
     LEDs      blue moving | green charging | dim white idle   (purple listening, amber focus if enabled)
-    screen    phone status + song playing
+    screen    phone status, charger state, focus timer
     extras    (off by default) knock to talk: config.ENABLE_KNOCK, TV remote: config.ENABLE_IR
 
 Uses the `freewili` Python library (pip install freewili, Python 3.10+). Talks USB serial.
@@ -189,7 +189,6 @@ class Panel:
     def screen_text(self):
         s = state.summary()
         lines = ["SMART DESK", "Phone: " + s["phone"]]
-        lines.append("Music: " + (s["music"][:40] if s["music"] else "-"))
         if s["focus"]:
             lines.append("FOCUS " + s["focus"])
         if s["listening"]:

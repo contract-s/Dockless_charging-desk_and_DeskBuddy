@@ -18,6 +18,15 @@
     E <0|1>                 motors off / on (off lets you push the rods by hand)
     P <0|1>                 charger (coil) power off / on   (only if USE_COIL_SWITCH is 1)
 
+  Wiring (A4988 drivers, NEMA17 motors, 1/16 microstepping):
+    X driver (TOP track):   STEP -> GPIO 26, DIR -> GPIO 27
+    Y driver (LEFT track):  STEP -> GPIO 13, DIR -> GPIO 33
+    Both drivers:           EN -> GPIO 25 (shared), VDD -> 3.3 V, GND -> ESP32 GND,
+                            VMOT -> 12 V motor supply (its GND joined to ESP32 GND),
+                            MS1 + MS2 + MS3 -> 3.3 V (= 1/16 microstepping; unconnected = full step!),
+                            RESET jumpered to SLEEP (or the driver stays asleep)
+  Never plug or unplug a motor while the 12 V supply is on.
+
   Library: AccelStepper (Arduino IDE: Tools > Manage Libraries > "AccelStepper" by Mike McCauley)
   Board:   ESP32 Dev Module  (ELEGOO ESP-WROOM-32)
 */
@@ -32,12 +41,18 @@
 
 // Max speed and acceleration in steps/s and steps/s^2.
 #if MOTOR_TYPE == 1
-const float MAX_SPEED = 4000;    // 1/16 microstepping, GT2 20T: 4000 steps/s = 50 mm/s
+const float MAX_SPEED = 4000;    // A4988 at 1/16 microstepping, GT2 20T: 4000 steps/s = 50 mm/s
 const float ACCEL     = 3000;
 #else
 const float MAX_SPEED = 600;     // 28BYJ-48 cannot go much faster than this (~15 RPM)
 const float ACCEL     = 400;
 #endif
+
+// Travel limits in steps: the firmware never drives past these, even if told to.
+// = motion.py TRAVEL_MM (434 x 242 mm) x 80 steps/mm (1/16 microstepping, GT2 20T pulley).
+// If you change TRAVEL_MM or the microstepping in motion.py, change these too.
+const long X_MAX_STEPS = 34720;
+const long Y_MAX_STEPS = 19360;
 
 // Pins. Change to match your wiring.
 #if MOTOR_TYPE == 1
@@ -114,6 +129,8 @@ void handle(String cmd) {
   if (c == 'G') {
     long x, y;
     if (sscanf(cmd.c_str() + 1, "%ld %ld", &x, &y) != 2) { Serial.println("error: use G <x> <y>"); return; }
+    x = constrain(x, 0L, X_MAX_STEPS);   // never past the ends of the track
+    y = constrain(y, 0L, Y_MAX_STEPS);
     if (!motorsOn) setMotors(true);
     motorX.moveTo(x);
     motorY.moveTo(y);
