@@ -171,9 +171,9 @@ class PositionSmoother:
 
 
 def open_serial():
-    """Connect to the gantry controller and home it. Returns a Gantry (has .goto_desk and .close)."""
-    import grbl_controller
-    return grbl_controller.open_gantry(port=SERIAL_PORT, auto_home=True)
+    """Connect to the ESP32 (charger_mover.ino) through motion.py. Returns a motion.Mover."""
+    import motion
+    return motion.start(port="auto", use_limit_switches=False)
 
 
 def send_target(ser, x_cm, y_cm):

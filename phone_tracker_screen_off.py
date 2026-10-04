@@ -48,6 +48,10 @@ MISS_TOLERANCE = 3
 PROFILE_FILE = "phone_profile.json"
 PROFILE_TOL = 0.12
 ALLOW_CV_ONLY_WITHOUT_PROFILE = False   # leave False to avoid false positives until you teach it
+SEND_SERIAL = False         # running this file on its own: True = move the charger (motion.py + ESP32).
+                            # Under desk_brain.py this is ignored: it passes in its own motion.Mover.
+SETTLE_FRAMES = 8           # phone still this many frames -> send one exact final move
+SETTLE_TOLERANCE_CM = 0.4   # ...if the charger is more than this far off
 LOST_AFTER_S = 3.0          # unseen this long = phone picked up (reported to desk_brain.py)
 
 DEFAULT_LONG = ptc.PHONE_LONG_CM
@@ -166,9 +170,14 @@ def main(on_event=None, state=None):
     profile = load_profile()
     confirmer, smoother = Confirmer(), ptc.PositionSmoother()
     own_ser = state is None or state.mover is None
-    ser = (ptc.open_serial() if ptc.SEND_SERIAL else None) if own_ser else state.mover
+    if own_ser:
+        import motion
+        ser = motion.start(port="auto", use_limit_switches=False) if SEND_SERIAL else None
+    else:
+        ser = state.mover
     last_sent, show_mask = None, False
     present, last_seen = False, 0.0
+    prev_target, still_frames = None, 0
     win = "Phone Tracking (hybrid)"
 
     cv2.namedWindow(win)
@@ -220,13 +229,23 @@ def main(on_event=None, state=None):
                 cv2.putText(frame, f"[{source}] target ({target[0]:.1f}, {target[1]:.1f}) cm",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 following = state is None or state.tracking_enabled
-                if following and (last_sent is None
-                        or abs(target[0] - last_sent[0]) > ptc.MOVE_TOLERANCE_CM
-                        or abs(target[1] - last_sent[1]) > ptc.MOVE_TOLERANCE_CM):
-                    last_sent = target
-                    ptc.send_target(ser, *target)
-                    emit("phone_moved", x=target[0], y=target[1])
-                    print(f"[{source}] target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
+                if prev_target is not None and max(abs(target[0] - prev_target[0]),
+                                                   abs(target[1] - prev_target[1])) < 0.1:
+                    still_frames += 1
+                else:
+                    still_frames = 0
+                prev_target = target
+                off = (99.0 if last_sent is None else
+                       max(abs(target[0] - last_sent[0]), abs(target[1] - last_sent[1])))
+                if following and (off > ptc.MOVE_TOLERANCE_CM
+                                  or (still_frames >= SETTLE_FRAMES and off > SETTLE_TOLERANCE_CM)):
+                    # motion.py skips moves sent < 0.2 s apart (returns None); only count a move
+                    # as sent if it really went out, so the final position is never dropped
+                    sent = ser is None or ser.goto_desk(*target) is not None
+                    if sent:
+                        last_sent = target
+                        emit("phone_moved", x=target[0], y=target[1])
+                        print(f"[{source}] target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
 
             cv2.imshow(win, frame)
             if show_mask:
