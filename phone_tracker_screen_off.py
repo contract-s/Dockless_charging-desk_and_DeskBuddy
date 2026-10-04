@@ -1,294 +1,238 @@
 """
-phone_tracker_screen_off.py  —  finds a phone with the screen OFF. OpenCV only, no YOLO.
+phone_tracker_hybrid.py
 
-How it works:
-  1. At start it photographs the EMPTY pane (keep the pane clear for the first second).
-  2. Every frame it compares the camera image to that empty-pane photo. Anything new that
-     appeared on the pane and is phone-shaped (rectangle, phone-sized in real cm) is the phone.
-     Reflections that are always on the plexiglass are in the empty-pane photo too, so they cancel.
-  3. Only the pane area is looked at (from calibration.json), so things around it are ignored.
-  4. Brightness is evened out every frame, and the empty-pane photo slowly follows light changes
-     (only where nothing is lying), so normal light drift doesn't break it.
+Combines YOLO (good when the phone is ON) with the dark-rectangle detector from
+phone_tracker_cv.py (good when the phone is OFF), and uses agreement between
+them to avoid false positives on random dark rectangles.
 
-Run (from the folder with calibration.json):   python phone_tracker_screen_off.py
-Keys:   q quit  |  b retake the empty pane (clear the pane first)  |  m show/hide what changed
-Slider: "sensitivity" = how different from the empty pane counts as "something is there".
-        Raise it if shadows or glare get boxed; lower it if the phone is missed.
-Boxes:  BLUE = phone   thin RED = something changed but isn't phone-shaped (label says why)
+Decision rules, per frame:
+  1. YOLO detects a phone with confidence >= STRONG_CONF       -> use it       (3 frames to confirm)
+  2. Else a dark-rectangle candidate that a WEAK YOLO box
+     (conf >= WEAK_CONF) also covers                             -> use it       (3 frames to confirm)
+  3. Else a dark-rectangle candidate on its own                  -> use it ONLY if you have taught it
+     your phone's size (press 'l'), and then it must stay put
+     for CONFIRM_CV_ONLY frames.
 
-To drive the motors: set SEND_SERIAL = True (needs motion.py and the ESP32).
+Teach it your phone: put the phone (off, or on) on the pane where it is detected as a
+green box, press 'l'. It stores the phone's real size in phone_profile.json and from then
+on the CV-only path accepts only blobs within +/-12% of that size. Press 'c' to clear.
+
+Files needed in the same folder: phone_tracker_cv.py, calibration.json
+Run:  python phone_tracker_hybrid.py
+Keys: q quit | l learn phone size | c clear learned size | m show/hide dark mask
 """
 
 import json
 import os
-import time
 
 import cv2
 import numpy as np
 
-# ============================== SETTINGS ==============================
-CAMERA_INDEX = 1
-FRAME_WIDTH, FRAME_HEIGHT = 640, 480
-CALIBRATION_FILE = "calibration.json"
-DESK_WIDTH_CM, DESK_DEPTH_CM = 60.96, 45.72      # 24 x 18 in pane
+import phone_tracker_cv as ptc
 
-DIFF_THRESHOLD = 30          # 0-255, slider "sensitivity" tunes it
-PHONE_LONG_CM = (11.0, 19.0)
-PHONE_SHORT_CM = (5.0, 9.5)
-MIN_FILL = 0.70              # how rectangular (blob area / rotated box area)
-JOIN_GAP_PX = 25             # 2nd try: join pieces this close (a reflection splitting the phone)
-PANE_INSET_CM = 0.5          # ignore a thin strip at the pane's edge (frame/mount shadows)
+MODEL_NAME = "yolov8n.pt"
+CELL_PHONE_CLASS_ID = 67
+YOLO_IMGSZ = 640            # try 960 if YOLO misses a lit phone
+STRONG_CONF = 0.35
+WEAK_CONF = 0.08
+# YOLO boxes are axis-aligned, so a rotated phone's box is larger than the phone
+YOLO_LONG_CM = (6.0, 30.0)
+YOLO_SHORT_CM = (3.0, 22.0)
 
-BG_FRAMES = 15               # frames averaged for the empty-pane photo
-BG_LEARN_RATE = 0.02         # how fast the empty-pane photo follows slow light changes
-
-CONFIRM_FRAMES = 5           # phone must stay in one spot this many frames
+CONFIRM_YOLO = 3
+CONFIRM_CV_ONLY = 12
 CONFIRM_RADIUS_CM = 4.0
-MISS_TOLERANCE = 5           # frames it can drop out before the streak restarts
-SMOOTH_WINDOW = 5
-MOVE_TOLERANCE_CM = 1.5      # only send a new target if it moved more than this
+MISS_TOLERANCE = 3
 
-SEND_SERIAL = False          # True -> move the charger (motion.py + ESP32)
-# ======================================================================
+PROFILE_FILE = "phone_profile.json"
+PROFILE_TOL = 0.12
+ALLOW_CV_ONLY_WITHOUT_PROFILE = False   # leave False to avoid false positives until you teach it
 
-
-def load_calibration():
-    if not os.path.exists(CALIBRATION_FILE):
-        raise FileNotFoundError("No calibration.json here. Run: python yolo_phone_tracker.py --calibrate")
-    with open(CALIBRATION_FILE) as f:
-        return np.array(json.load(f)["homography"], dtype=np.float64)
+DEFAULT_LONG = ptc.PHONE_LONG_CM
+DEFAULT_SHORT = ptc.PHONE_SHORT_CM
+LAST_REJECTED = []   # YOLO boxes rejected by the size/pane filter (drawn in magenta)
 
 
-def to_desk(H, pts):
-    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
-    return cv2.perspectiveTransform(pts, H).reshape(-1, 2)
-
-
-def pane_mask(H, shape):
-    """White where the pane is in the camera image."""
-    i = PANE_INSET_CM
-    corners = np.array([[i, i], [DESK_WIDTH_CM - i, i], [DESK_WIDTH_CM - i, DESK_DEPTH_CM - i],
-                        [i, DESK_DEPTH_CM - i]], dtype=np.float64).reshape(-1, 1, 2)
-    px = cv2.perspectiveTransform(corners, np.linalg.inv(H)).reshape(-1, 2).astype(np.int32)
-    m = np.zeros(shape[:2], np.uint8)
-    cv2.fillPoly(m, [px], 255)
-    if cv2.countNonZero(m) < 1000:          # odd calibration: use the whole image
-        m[:] = 255
-    return m
-
-
-def prep(frame):
-    g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return cv2.GaussianBlur(g, (5, 5), 0).astype(np.float32)
-
-
-class EmptyPane:
-    def __init__(self, pane):
-        self.pane = pane
-        self.bg = None
-        self.frames = []
-
-    def ready(self):
-        return self.bg is not None
-
-    def reset(self):
-        self.bg, self.frames = None, []
-
-    def add_startup_frame(self, gray):
-        self.frames.append(gray)
-        if len(self.frames) >= BG_FRAMES:
-            self.bg = np.median(np.stack(self.frames), axis=0).astype(np.float32)
-            self.frames = []
-
-    def difference(self, gray):
-        """|frame - empty pane| after evening out overall brightness, only inside the pane."""
-        inside = self.pane > 0
-        gain = np.median(self.bg[inside]) / max(np.median(gray[inside]), 1.0)
-        g = gray * gain
-        diff = np.abs(g - self.bg)
-        diff[~inside] = 0
-        return diff, g
-
-    def learn(self, g, foreground):
-        """Slowly follow light changes, but never where something is lying on the pane."""
-        keep_out = cv2.dilate(foreground, np.ones((25, 25), np.uint8))
-        update = ((keep_out == 0) & (self.pane > 0)).astype(np.uint8)
-        cv2.accumulateWeighted(g, self.bg, BG_LEARN_RATE, mask=update)
-
-
-def find_phone(diff, H, threshold):
-    """-> (best, candidates, mask). best = dict(box, center_cm) or None."""
-    mask = (diff > threshold).astype(np.uint8) * 255
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((11, 11), np.uint8))
-    best, cands = _shapes(mask, H)
-    if best is None and len(cands) > 1:
-        # 2nd try: a reflection may have split the phone into pieces -> join nearby pieces
-        joined = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (JOIN_GAP_PX, JOIN_GAP_PX)))
-        best2, cands2 = _shapes(joined, H)
-        if best2 is not None:
-            return best2, cands2, joined
-    return best, cands, mask
-
-
-def _shapes(mask, H):
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    best, best_fill, cands = None, -1.0, []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 300:
-            continue
-        rect = cv2.minAreaRect(c)
-        box = cv2.boxPoints(rect)
-        cm = to_desk(H, box)
+# ---------------------------------------------------------------------------
+# YOLO helpers
+# ---------------------------------------------------------------------------
+def yolo_detections(model, frame, H):
+    """Phone detections (conf >= WEAK_CONF) that pass loose size and pane checks."""
+    res = model(frame, classes=[CELL_PHONE_CLASS_ID], conf=WEAK_CONF,
+                imgsz=YOLO_IMGSZ, verbose=False)[0]
+    dets = []
+    LAST_REJECTED.clear()
+    for b in res.boxes:
+        x1, y1, x2, y2 = b.xyxy[0].tolist()
+        corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+        cm = ptc.pts_to_desk(H, corners)
         s1 = float(np.linalg.norm(cm[0] - cm[1]))
         s2 = float(np.linalg.norm(cm[1] - cm[2]))
         long_, short_ = max(s1, s2), min(s1, s2)
-        fill = area / max(rect[1][0] * rect[1][1], 1.0)
-        center = to_desk(H, [rect[0]])[0]
-
-        why = None
-        if not (PHONE_LONG_CM[0] <= long_ <= PHONE_LONG_CM[1]
-                and PHONE_SHORT_CM[0] <= short_ <= PHONE_SHORT_CM[1]):
-            why = "size"
-        elif fill < MIN_FILL:
-            why = "shape"
-        label = f"{long_:.1f}x{short_:.1f}cm fill {fill:.2f}" + (f" ({why})" if why else "")
-        cands.append((box.astype(int), label, why is None))
-        if why is None and fill > best_fill:
-            best_fill = fill
-            best = dict(box=box.astype(int), center_cm=(float(center[0]), float(center[1])))
-    return best, cands
+        center_cm = ptc.pts_to_desk(H, np.array([[(x1 + x2) / 2, (y1 + y2) / 2]]))[0]
+        in_pane = (-ptc.PANE_MARGIN_CM <= center_cm[0] <= ptc.DESK_WIDTH_CM + ptc.PANE_MARGIN_CM
+                   and -ptc.PANE_MARGIN_CM <= center_cm[1] <= ptc.DESK_DEPTH_CM + ptc.PANE_MARGIN_CM)
+        if (YOLO_LONG_CM[0] <= long_ <= YOLO_LONG_CM[1]
+                and YOLO_SHORT_CM[0] <= short_ <= YOLO_SHORT_CM[1] and in_pane):
+            dets.append(dict(conf=float(b.conf[0]), box_px=(x1, y1, x2, y2),
+                             center_cm=(float(center_cm[0]), float(center_cm[1]))))
+        else:
+            why = "outside pane" if not in_pane else "size"
+            LAST_REJECTED.append(((x1, y1, x2, y2),
+                                  f"yolo REJECT({why}) {float(b.conf[0]):.2f} {long_:.1f}x{short_:.1f}cm"))
+    return dets
 
 
+def decide(yolo, cv_best, profile_learned, allow_unlearned=ALLOW_CV_ONLY_WITHOUT_PROFILE):
+    """Return (center_cm, source, frames_needed) or None."""
+    strong = [d for d in yolo if d["conf"] >= STRONG_CONF]
+    if strong:
+        d = max(strong, key=lambda d: d["conf"])
+        return d["center_cm"], "yolo", CONFIRM_YOLO
+    if cv_best is not None:
+        px, py = cv_best["center_px"]
+        for d in yolo:                       # weak YOLO box covering the CV blob
+            x1, y1, x2, y2 = d["box_px"]
+            if x1 <= px <= x2 and y1 <= py <= y2:
+                return cv_best["center_cm"], "cv+yolo", CONFIRM_YOLO
+        if profile_learned or allow_unlearned:
+            return cv_best["center_cm"], "cv-only", CONFIRM_CV_ONLY
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Confirmation / profile
+# ---------------------------------------------------------------------------
 class Confirmer:
     def __init__(self):
         self.pos, self.streak, self.misses = None, 0, 0
 
-    def update(self, x, y):
+    def update(self, x, y, need):
         self.misses = 0
-        if self.pos and abs(x - self.pos[0]) <= CONFIRM_RADIUS_CM and abs(y - self.pos[1]) <= CONFIRM_RADIUS_CM:
+        if (self.pos is not None and abs(x - self.pos[0]) <= CONFIRM_RADIUS_CM
+                and abs(y - self.pos[1]) <= CONFIRM_RADIUS_CM):
             self.streak += 1
         else:
             self.streak = 1
         self.pos = (x, y)
-        return self.streak >= CONFIRM_FRAMES
+        return (x, y) if self.streak >= need else None
 
     def miss(self):
         self.misses += 1
         if self.misses > MISS_TOLERANCE:
-            self.pos, self.streak = None, 0
+            self.streak, self.pos = 0, None
 
 
-class Smoother:
-    def __init__(self):
-        self.hist = []
-
-    def update(self, x, y):
-        self.hist = (self.hist + [(x, y)])[-SMOOTH_WINDOW:]
-        return (sum(p[0] for p in self.hist) / len(self.hist),
-                sum(p[1] for p in self.hist) / len(self.hist))
+def apply_profile(long_cm, short_cm):
+    ptc.PHONE_LONG_CM = (long_cm * (1 - PROFILE_TOL), long_cm * (1 + PROFILE_TOL))
+    ptc.PHONE_SHORT_CM = (short_cm * (1 - PROFILE_TOL), short_cm * (1 + PROFILE_TOL))
 
 
-def open_serial():
-    import motion
-    return motion.start(port="auto", use_limit_switches=False)
+def clear_profile():
+    ptc.PHONE_LONG_CM, ptc.PHONE_SHORT_CM = DEFAULT_LONG, DEFAULT_SHORT
+    if os.path.exists(PROFILE_FILE):
+        os.remove(PROFILE_FILE)
 
 
-def send_target(ser, x_cm, y_cm):
-    if ser is not None:
-        ser.goto_desk(x_cm, y_cm)
+def load_profile():
+    if os.path.exists(PROFILE_FILE):
+        p = json.load(open(PROFILE_FILE))
+        apply_profile(p["long_cm"], p["short_cm"])
+        return p
+    return None
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    from ultralytics import YOLO
+
+    cap = cv2.VideoCapture(ptc.CAMERA_INDEX)
     if not cap.isOpened():
-        raise RuntimeError("Could not open the webcam (check CAMERA_INDEX).")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        raise RuntimeError("Could not open webcam. Check CAMERA_INDEX in phone_tracker_cv.py.")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, ptc.FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, ptc.FRAME_HEIGHT)
 
-    H = load_calibration()
-    ok, frame = cap.read()
-    while not ok:
-        ok, frame = cap.read()
-    empty = EmptyPane(pane_mask(H, frame.shape))
-    confirmer, smoother = Confirmer(), Smoother()
-    ser = open_serial() if SEND_SERIAL else None
+    H = ptc.load_calibration()
+    model = YOLO(MODEL_NAME)
+    profile = load_profile()
+    confirmer, smoother = Confirmer(), ptc.PositionSmoother()
+    ser = ptc.open_serial() if ptc.SEND_SERIAL else None
     last_sent, show_mask = None, False
+    win = "Phone Tracking (hybrid)"
 
-    win = "Phone tracking (screen off)"
     cv2.namedWindow(win)
-    cv2.createTrackbar("sensitivity", win, DIFF_THRESHOLD, 120, lambda v: None)
-    print("Keep the pane EMPTY for a second while it photographs it...")
-    print("Keys: q quit | b retake empty pane | m show what changed")
+    cv2.createTrackbar("dark", win, ptc.DARK_THRESHOLD, 255, lambda v: None)
+    print("Learned phone size:", profile if profile else "none (CV-only path disabled)")
+    print("Keys: q quit | l learn phone size | c clear | m mask")
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 continue
-            gray = prep(frame)
+            dark = max(1, cv2.getTrackbarPos("dark", win))
+            yolo = yolo_detections(model, frame, H)
+            cv_best, cands, mask = ptc.find_phone(frame, H, dark)
 
-            if not empty.ready():
-                empty.add_startup_frame(gray)
-                cv2.putText(frame, "Photographing the EMPTY pane - keep it clear...", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-                if empty.ready():
-                    print("Empty pane saved. Put the phone down.")
-                cv2.imshow(win, frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
-                continue
-
-            thr = max(5, cv2.getTrackbarPos("sensitivity", win))
-            diff, g = empty.difference(gray)
-            best, cands, mask = find_phone(diff, H, thr)
-            empty.learn(g, mask)
-
-            target = None
-            if best is None:
+            choice = decide(yolo, cv_best, profile is not None)
+            target, source = None, "-"
+            if choice is None:
                 confirmer.miss()
-            elif confirmer.update(*best["center_cm"]):
-                target = smoother.update(*best["center_cm"])
-
-            for box, label, ok_ in cands:
-                if not ok_:
-                    cv2.polylines(frame, [box], True, (0, 0, 255), 1)
-                    cv2.putText(frame, label, tuple(box[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-            if best is not None:
-                cx, cy = best["center_cm"]
-                cv2.polylines(frame, [best["box"]], True, (255, 128, 0), 2)
-                cv2.putText(frame, f"phone ({cx:.1f}, {cy:.1f}) cm [{confirmer.streak}/{CONFIRM_FRAMES}]",
-                            tuple(best["box"][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 128, 0), 2)
-
-            if target is not None:
-                cv2.putText(frame, f"TARGET ({target[0]:.1f}, {target[1]:.1f}) cm", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
-                if (last_sent is None or abs(target[0] - last_sent[0]) > MOVE_TOLERANCE_CM
-                        or abs(target[1] - last_sent[1]) > MOVE_TOLERANCE_CM):
-                    last_sent = target
-                    send_target(ser, *target)
-                    print(f"target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
             else:
-                cv2.putText(frame, "searching...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+                (cx, cy), source, need = choice
+                confirmed = confirmer.update(cx, cy, need)
+                if confirmed is not None:
+                    target = smoother.update(*confirmed)
+
+            for d in yolo:
+                x1, y1, x2, y2 = map(int, d["box_px"])
+                col = (0, 200, 0) if d["conf"] >= STRONG_CONF else (0, 165, 255)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), col, 1)
+                cv2.putText(frame, f"yolo {d['conf']:.2f}", (x1, y2 + 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
+            for (rx1, ry1, rx2, ry2), rl in LAST_REJECTED:
+                cv2.rectangle(frame, (int(rx1), int(ry1)), (int(rx2), int(ry2)), (255, 0, 255), 1)
+                cv2.putText(frame, rl, (int(rx1), max(12, int(ry1) - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1)
+            for box, label, accepted in cands:
+                col = (0, 255, 0) if accepted else (0, 0, 255)
+                cv2.polylines(frame, [box], True, col, 2)
+                cv2.putText(frame, label, tuple(box[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
+            if target is not None:
+                cv2.putText(frame, f"[{source}] target ({target[0]:.1f}, {target[1]:.1f}) cm",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                if (last_sent is None
+                        or abs(target[0] - last_sent[0]) > ptc.MOVE_TOLERANCE_CM
+                        or abs(target[1] - last_sent[1]) > ptc.MOVE_TOLERANCE_CM):
+                    last_sent = target
+                    ptc.send_target(ser, *target)
+                    print(f"[{source}] target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
 
             cv2.imshow(win, frame)
             if show_mask:
-                cv2.imshow("What changed", mask)
-            k = cv2.waitKey(1) & 0xFF
-            if k == ord("q"):
-                print(f"sensitivity was {thr} (set DIFF_THRESHOLD = {thr} to keep it)")
+                cv2.imshow("Dark mask", mask)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                print(f"Final dark threshold: {dark} (set DARK_THRESHOLD = {dark} in phone_tracker_cv.py)")
                 break
-            elif k == ord("b"):
-                empty.reset()
-                confirmer, smoother, last_sent = Confirmer(), Smoother(), None
-                print("Retaking the empty pane - clear the pane...")
-            elif k == ord("m"):
+            elif key == ord("m"):
                 show_mask = not show_mask
                 if not show_mask:
-                    cv2.destroyWindow("What changed")
+                    cv2.destroyWindow("Dark mask")
+            elif key == ord("l"):
+                if cv_best is not None:
+                    profile = dict(long_cm=round(cv_best["long"], 2), short_cm=round(cv_best["short"], 2))
+                    json.dump(profile, open(PROFILE_FILE, "w"))
+                    apply_profile(profile["long_cm"], profile["short_cm"])
+                    print("Learned phone size:", profile)
+                else:
+                    print("Nothing to learn from: no green CV box right now.")
+            elif key == ord("c"):
+                profile = None
+                clear_profile()
+                print("Cleared learned phone size.")
     except KeyboardInterrupt:
         pass
     finally:
