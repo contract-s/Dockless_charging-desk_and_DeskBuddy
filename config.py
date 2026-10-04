@@ -32,6 +32,15 @@ AGENT_NAME = "smart-charging-desk"
 AGENT_PORT = 8001
 
 # ============================== BEHAVIOUR ==============================
+# Demo scope: charging + music from the FREE-WILi. Flip these on for the extras.
+ENABLE_VOICE = False         # ElevenLabs push-to-talk (or run desk_brain.py --voice)
+ENABLE_KNOCK = False         # double-knock to talk (needs voice)
+ENABLE_IR = False            # TV remote via the FREE-WILi IR receiver
+
+# Spotify device to play on. "" = this laptop's Spotify app (never the phone on the desk).
+# Otherwise part of the device name as Spotify shows it, e.g. "MacBook".
+SPOTIFY_DEVICE_NAME = ""
+
 COMMAND_SERVER = ("127.0.0.1", 8765)   # fetch_agent.py talks to the desk here
 SPEAK_AGENT_REPLIES = True   # say ASI:One chat replies out loud too (fun in the demo)
 
@@ -57,12 +66,12 @@ ENERGY_FILE = "energy.json"
 
 # FREE-WILi panel. Button names as reported by freewili.read_all_buttons() (lower-case colour).
 FREEWILI_BUTTONS = {
-    "green": "push_to_talk",      # hold to talk
-    "yellow": "toggle_music",
-    "blue": "skip",
-    "red": "park_charger",
-    "gray": "focus_mode",
-    "white": "focus_mode",        # read_all_buttons() calls the 5th button White
+    "green": "previous",          # previous song   ("push_to_talk" if ENABLE_VOICE)
+    "yellow": "toggle_music",     # play / pause
+    "blue": "skip",               # next song
+    "red": "toggle_follow",       # park the charger / follow the phone again
+    "gray": "play_music",         # start DEFAULT_PLAYLIST_QUERY
+    "white": "play_music",        # read_all_buttons() calls the 5th button White
 }
 KNOCK_G = 1.8                # accelerometer spike (in g) that counts as a knock
 KNOCK_WINDOW_S = 0.6         # two knocks within this = start listening

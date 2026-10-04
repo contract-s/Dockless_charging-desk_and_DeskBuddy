@@ -1,12 +1,11 @@
 """
 freewili_panel.py  —  the FREE-WILi as the desk's control panel.
 
-    buttons   green = hold to talk     yellow = play/pause     blue = skip
-              red   = park charger     gray   = focus mode
-    knock     two knocks on the desk = start listening (accelerometer)
-    IR        any TV remote, after you map its codes in config.IR_MAP
-    LEDs      purple listening | blue moving | green charging | amber focus | dim white idle
-    screen    phone status, song playing, focus countdown
+    buttons   green = previous song    yellow = play/pause     blue = next song
+              red   = park / follow    gray   = start the default playlist   (see config.FREEWILI_BUTTONS)
+    LEDs      blue moving | green charging | dim white idle   (purple listening, amber focus if enabled)
+    screen    phone status + song playing
+    extras    (off by default) knock to talk: config.ENABLE_KNOCK, TV remote: config.ENABLE_IR
 
 Uses the `freewili` Python library (pip install freewili, Python 3.10+). Talks USB serial.
 The panel runs in its own thread, which owns the device; the rest of the desk only flags
@@ -72,8 +71,10 @@ class Panel:
         print(f"[freewili] connected: {self.fw}")
         self.fw.set_event_callback(self.on_event)
         ok(self.fw.enable_button_events(True, 33), "button events")
-        ok(self.fw.enable_ir_events(True), "IR events")
-        ok(self.fw.enable_accel_events(True, 33), "accel events")
+        if config.ENABLE_IR or self.learn_ir:
+            ok(self.fw.enable_ir_events(True), "IR events")
+        if (config.ENABLE_KNOCK and config.ENABLE_VOICE) or self.print_accel:
+            ok(self.fw.enable_accel_events(True, 33), "accel events")
         return self
 
     def close(self):
@@ -225,8 +226,9 @@ def main():
     a = ap.parse_args()
     if not (a.test or a.learn_ir or a.accel):
         raise SystemExit(__doc__)
-    p = Panel().connect()
+    p = Panel()
     p.learn_ir, p.print_accel = a.learn_ir, a.accel
+    p.connect()
     bus.on("listen_start", lambda **kw: print("[test] listen_start", kw))
     bus.on("listen_stop", lambda **kw: print("[test] listen_stop"))
     try:

@@ -46,15 +46,23 @@ class Spotify:
 
     # ---- devices ----
     def device_id(self):
-        """The active device, else this laptop's Spotify app, else any device."""
+        """config.SPOTIFY_DEVICE_NAME, else this laptop's Spotify app, else the active device.
+        The laptop wins over the active device so music never starts on the phone on the desk."""
         devices = self.sp.devices().get("devices", [])
         if not devices:
             raise SpotifyError("No Spotify device found. Open the Spotify app on the laptop.")
-        for d in devices:
-            if d.get("is_active"):
-                return d["id"]
+        want = config.SPOTIFY_DEVICE_NAME.lower()
+        if want:
+            for d in devices:
+                if want in d.get("name", "").lower():
+                    return d["id"]
+            print(f"[spotify] no device named {config.SPOTIFY_DEVICE_NAME!r}; have:",
+                  [d.get("name") for d in devices])
         for d in devices:
             if d.get("type") == "Computer":
+                return d["id"]
+        for d in devices:
+            if d.get("is_active"):
                 return d["id"]
         return devices[0]["id"]
 
@@ -92,7 +100,7 @@ class Spotify:
     def pause(self):
         with self.lock:
             try:
-                self.sp.pause_playback()
+                self.sp.pause_playback(device_id=self.device_id())
             except Exception as e:
                 if "Restriction violated" not in str(e):   # already paused
                     raise
@@ -108,15 +116,15 @@ class Spotify:
 
     def next(self):
         with self.lock:
-            self.sp.next_track()
+            self.sp.next_track(device_id=self.device_id())
 
     def previous(self):
         with self.lock:
-            self.sp.previous_track()
+            self.sp.previous_track(device_id=self.device_id())
 
     def volume(self, percent):
         with self.lock:
-            self.sp.volume(int(max(0, min(100, percent))))
+            self.sp.volume(int(max(0, min(100, percent))), device_id=self.device_id())
 
     def current_volume(self):
         pb = self.sp.current_playback()

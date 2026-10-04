@@ -10,6 +10,20 @@ phone down. You can talk to it, it plays your Spotify, and a FREE-WILi on the de
 An overhead camera finds the phone, a 2-axis gantry under the pane slides the charger beneath it, and
 charging starts automatically.
 
+## Demo setup (charging + music)
+| FREE-WILi | Does |
+|---|---|
+| yellow | play / pause Spotify |
+| blue / green | next / previous song |
+| gray | start the default playlist (`DEFAULT_PLAYLIST_QUERY`) |
+| red | park the charger / follow the phone again |
+| LEDs | blue = charger moving, green = charging, dim white = idle |
+| screen | phone status + the song playing |
+
+Music plays from the Spotify app on the laptop (pair a Bluetooth speaker to it). The FREE-WILi is the
+remote and display. Setting the phone down resumes the music; picking it up pauses it.
+Voice, knock, TV remote and the ASI:One agent are built but off by default (`config.py`, `--voice`).
+
 ## What it does
 - **Follows your phone:** YOLOv8 + a dark-rectangle detector find the phone, even with the screen off.
   A homography maps pixels to desk cm, and the ESP32 gantry moves the charger there.

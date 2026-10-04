@@ -31,6 +31,7 @@ ACTIONS = {
     "now_playing": ("{}", "say what song is playing"),
     "park_charger": ("{}", "send the charger home and stop following the phone"),
     "follow_phone": ("{}", "start following the phone again / bring the charger to the phone"),
+    "toggle_follow": ("{}", "park the charger if it is following the phone, else follow again"),
     "phone_status": ("{}", "where is the phone, is it charging"),
     "focus_mode": ('{"minutes": int}', "start a focus session: focus music + countdown on the panel"),
     "stop_focus": ("{}", "end the focus session"),
@@ -270,6 +271,9 @@ class Brain:
             m.goto_desk(*xy, force=True)
             return "Coming to your phone."
         return "Following your phone again."
+
+    def act_toggle_follow(self):
+        return self.act_follow_phone() if not state.tracking_enabled else self.act_park_charger()
 
     def act_phone_status(self):
         return f"Your phone is {state.summary()['phone']}."

@@ -2,9 +2,10 @@
 desk_brain.py  —  runs the whole smart desk.
 
     camera tracker  ->  gantry moves the charger under the phone
-    phone placed    ->  coil on, music resumes, "welcome back"
+    phone placed    ->  coil on, music resumes
     phone picked up ->  coil off, music pauses
-    voice (ElevenLabs), FREE-WILi panel, typed commands and the Fetch.ai agent all drive brain.py
+    FREE-WILi buttons control the music; its LEDs + screen show charging and the song
+    (optional extras: --voice for ElevenLabs, fetch_agent.py for ASI:One chat)
 
 Run:
     python desk_brain.py                      # everything
@@ -180,7 +181,7 @@ def main():
     ap.add_argument("--port", default="auto", help="ESP32 serial port (default: auto-detect)")
     ap.add_argument("--home", action="store_true", help="home with limit switches instead of assuming HOME")
     ap.add_argument("--no-camera", action="store_true")
-    ap.add_argument("--no-voice", action="store_true")
+    ap.add_argument("--voice", action="store_true", help="enable ElevenLabs voice (config.ENABLE_VOICE)")
     ap.add_argument("--no-panel", action="store_true", help="don't look for a FREE-WILi")
     ap.add_argument("--no-llm", action="store_true", help="keyword rules instead of ASI:One")
     a = ap.parse_args()
@@ -202,7 +203,7 @@ def main():
     print(f"[desk] command AI: {'ASI:One' if brain.use_llm else 'keywords'}")
     Desk(brain)
 
-    if not a.no_voice:
+    if a.voice or config.ENABLE_VOICE:
         from voice import Voice
         Voice(brain).start()
     if not a.no_panel:
