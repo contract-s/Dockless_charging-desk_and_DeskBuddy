@@ -28,6 +28,7 @@ starts from the right place.
 """
 
 import argparse
+import threading
 import time
 
 # ============================== SETTINGS ==============================
@@ -100,6 +101,7 @@ class Mover:
         self.port, self.dry_run, self.ser = port, dry_run, serial_obj
         self.last_send = 0.0
         self.target = (0, 0)
+        self.lock = threading.RLock()      # tracker + voice threads share the port
 
     # ---- connection ----
     def connect(self):
@@ -141,17 +143,18 @@ class Mover:
         if self.dry_run:
             print(f"[motion] > {cmd}")
             return "ok"
-        self.ser.write((cmd + "\n").encode())
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            ln = self.ser.readline().decode(errors="replace").strip()
-            if not ln:
-                continue
-            if ln == "ok" or ln.startswith("pos "):
-                return ln
-            if ln.startswith("error"):
-                raise MoverError(f"{cmd!r} -> {ln}")
-        raise MoverError(f"no reply to {cmd!r} (wrong port, or firmware not uploaded?)")
+        with self.lock:
+            self.ser.write((cmd + "\n").encode())
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                ln = self.ser.readline().decode(errors="replace").strip()
+                if not ln:
+                    continue
+                if ln == "ok" or ln.startswith("pos "):
+                    return ln
+                if ln.startswith("error"):
+                    raise MoverError(f"{cmd!r} -> {ln}")
+            raise MoverError(f"no reply to {cmd!r} (wrong port, or firmware not uploaded?)")
 
     def status(self):
         """-> (x_steps, y_steps, moving)"""
@@ -185,6 +188,17 @@ class Mover:
 
     def motors(self, on):
         self.send(f"E {1 if on else 0}")
+
+    def park(self):
+        """Drive the charger back to HOME (0, 0)."""
+        self.goto_steps(0, 0)
+
+    def coil(self, on):
+        """Switch the charger's power (firmware USE_COIL_SWITCH 1). Harmless if the firmware lacks it."""
+        try:
+            self.send(f"P {1 if on else 0}")
+        except MoverError as e:
+            print("[motion] coil switch not available:", e)
 
     def goto_steps(self, xs, ys):
         self.send(f"G {xs} {ys}")

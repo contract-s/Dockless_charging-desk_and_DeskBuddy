@@ -1,0 +1,14 @@
+# Python 3.10+ (the freewili library needs it)
+ultralytics
+opencv-python
+numpy
+pyserial
+spotipy
+elevenlabs
+sounddevice
+soundfile
+openai
+uagents
+freewili
+python-dotenv
+requests

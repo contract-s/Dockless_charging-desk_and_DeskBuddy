@@ -5,3 +5,7 @@ venv/
 .DS_Store
 *.pt
 calibration.json
+.env
+.cache*
+phone_profile.json
+energy.json
