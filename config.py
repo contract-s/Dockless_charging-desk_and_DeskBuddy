@@ -62,7 +62,7 @@ FREEWILI_BUTTONS = {
     "blue": "skip",
     "red": "park_charger",
     "gray": "focus_mode",
-    "white": "focus_mode",        # some boards call the 5th button white
+    "white": "focus_mode",        # read_all_buttons() calls the 5th button White
 }
 KNOCK_G = 1.8                # accelerometer spike (in g) that counts as a knock
 KNOCK_WINDOW_S = 0.6         # two knocks within this = start listening
