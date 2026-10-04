@@ -42,8 +42,8 @@ const float ACCEL     = 400;
 // Pins. Change to match your wiring.
 #if MOTOR_TYPE == 1
 const int X_STEP = 26, X_DIR = 27;   // top track motor (charger left/right)
-const int Y_STEP = 25, Y_DIR = 33;   // left track motor (charger up/down)
-const int EN_PIN = 13;               // driver ENABLE (active LOW), shared; -1 if not wired
+const int Y_STEP = 13, Y_DIR = 33;   // left track motor (charger up/down)
+const int EN_PIN = 25;               // driver ENABLE (active LOW), shared by both drivers; -1 if not wired
 #else
 // ULN2003 IN1..IN4.  AccelStepper wants them in the order IN1, IN3, IN2, IN4 for the 28BYJ-48.
 const int X_IN1 = 26, X_IN2 = 25, X_IN3 = 33, X_IN4 = 32;

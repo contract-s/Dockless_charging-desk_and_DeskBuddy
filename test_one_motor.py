@@ -8,7 +8,7 @@ phone at the pane's left edge -> carriage at the motor end, right edge -> far en
 Nothing in phone_tracker_screen_off.py or motion.py is changed: this script only swaps the
 "desk cm -> steps" maths for one that fits the test track, then runs the normal tracker.
 
-Wiring: the test motor on the ESP32's X driver (STEP gpio26, DIR gpio27, ENABLE gpio13),
+Wiring: the test motor on the ESP32's X driver (STEP gpio26, DIR gpio27, ENABLE gpio25),
 same as the real top-track motor. Motor power from its own supply, common GND with the ESP32.
 
 Steps:
