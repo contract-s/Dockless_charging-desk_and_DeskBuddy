@@ -102,6 +102,7 @@ class Mover:
         self.last_send = 0.0
         self.target = (0, 0)
         self.lock = threading.RLock()      # tracker + voice threads share the port
+        self.coil_supported = True
 
     # ---- connection ----
     def connect(self):
@@ -195,9 +196,12 @@ class Mover:
 
     def coil(self, on):
         """Switch the charger's power (firmware USE_COIL_SWITCH 1). Harmless if the firmware lacks it."""
+        if not self.coil_supported:
+            return
         try:
             self.send(f"P {1 if on else 0}")
         except MoverError as e:
+            self.coil_supported = False
             print("[motion] coil switch not available:", e)
 
     def goto_steps(self, xs, ys):

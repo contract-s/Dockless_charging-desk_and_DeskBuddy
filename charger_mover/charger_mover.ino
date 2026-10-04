@@ -16,6 +16,7 @@
     S                       stop (decelerate)
     ?                       status:  "pos <x> <y> moving <0|1>"
     E <0|1>                 motors off / on (off lets you push the rods by hand)
+    P <0|1>                 charger (coil) power off / on   (only if USE_COIL_SWITCH is 1)
 
   Library: AccelStepper (Arduino IDE: Tools > Manage Libraries > "AccelStepper" by Mike McCauley)
   Board:   ESP32 Dev Module  (ELEGOO ESP-WROOM-32)
@@ -55,6 +56,12 @@ const int X_LIMIT = 4, Y_LIMIT = 16;
 const float HOME_SPEED = 400;        // steps/s while searching for the switch
 const long  HOME_MAX_STEPS = 60000;  // give up after this many steps
 const long  HOME_BACKOFF = 200;      // steps to move off the switch after touching it
+
+// Optional: switch the charger's USB power with a relay / MOSFET so the coil is only on
+// when a phone is there (desk_brain.py sends P 1 / P 0). Switch the low-voltage USB side only.
+#define USE_COIL_SWITCH 0
+const int  COIL_PIN = 18;
+const bool COIL_ACTIVE_HIGH = true;  // false for relay boards that switch on a LOW input
 // ======================================================================
 
 #if MOTOR_TYPE == 1
@@ -129,6 +136,15 @@ void handle(String cmd) {
     Serial.println("ok");
   } else if (c == '?') {
     Serial.printf("pos %ld %ld moving %d\n", motorX.currentPosition(), motorY.currentPosition(), moving() ? 1 : 0);
+  } else if (c == 'P') {
+#if USE_COIL_SWITCH
+    int on = 1;
+    sscanf(cmd.c_str() + 1, "%d", &on);
+    digitalWrite(COIL_PIN, (on != 0) == COIL_ACTIVE_HIGH ? HIGH : LOW);
+    Serial.println("ok");
+#else
+    Serial.println("error: no coil switch (USE_COIL_SWITCH 0)");
+#endif
   } else if (c == 'E') {
     int on = 1;
     sscanf(cmd.c_str() + 1, "%d", &on);
@@ -143,6 +159,10 @@ void setup() {
   Serial.begin(115200);
 #if MOTOR_TYPE == 1
   if (EN_PIN >= 0) pinMode(EN_PIN, OUTPUT);
+#endif
+#if USE_COIL_SWITCH
+  pinMode(COIL_PIN, OUTPUT);
+  digitalWrite(COIL_PIN, COIL_ACTIVE_HIGH ? LOW : HIGH);   // coil off until a phone shows up
 #endif
 #if USE_LIMIT_SWITCHES
   pinMode(X_LIMIT, INPUT_PULLUP);
