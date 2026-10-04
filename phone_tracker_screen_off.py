@@ -19,11 +19,12 @@ on the CV-only path accepts only blobs within +/-12% of that size. Press 'c' to 
 
 Files needed in the same folder: phone_tracker_cv.py, calibration.json
 Run:  python phone_tracker_hybrid.py
-Keys: q quit | l learn phone size | c clear learned size | m show/hide dark mask
+Keys: q quit | l learn phone size | c clear learned size | m show/hide dark mask | space talk to the desk
 """
 
 import json
 import os
+import time
 
 import cv2
 import numpy as np
@@ -47,6 +48,7 @@ MISS_TOLERANCE = 3
 PROFILE_FILE = "phone_profile.json"
 PROFILE_TOL = 0.12
 ALLOW_CV_ONLY_WITHOUT_PROFILE = False   # leave False to avoid false positives until you teach it
+LOST_AFTER_S = 3.0          # unseen this long = phone picked up (reported to desk_brain.py)
 
 DEFAULT_LONG = ptc.PHONE_LONG_CM
 DEFAULT_SHORT = ptc.PHONE_SHORT_CM
@@ -145,8 +147,13 @@ def load_profile():
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
+def main(on_event=None, state=None):
+    """on_event(name, **kw) / state (desk_bus.DeskState) are passed in by desk_brain.py; both optional."""
     from ultralytics import YOLO
+
+    def emit(name, **kw):
+        if on_event is not None:
+            on_event(name, **kw)
 
     cap = cv2.VideoCapture(ptc.CAMERA_INDEX)
     if not cap.isOpened():
@@ -158,14 +165,16 @@ def main():
     model = YOLO(MODEL_NAME)
     profile = load_profile()
     confirmer, smoother = Confirmer(), ptc.PositionSmoother()
-    ser = ptc.open_serial() if ptc.SEND_SERIAL else None
+    own_ser = state is None or state.mover is None
+    ser = (ptc.open_serial() if ptc.SEND_SERIAL else None) if own_ser else state.mover
     last_sent, show_mask = None, False
+    present, last_seen = False, 0.0
     win = "Phone Tracking (hybrid)"
 
     cv2.namedWindow(win)
     cv2.createTrackbar("dark", win, ptc.DARK_THRESHOLD, 255, lambda v: None)
     print("Learned phone size:", profile if profile else "none (CV-only path disabled)")
-    print("Keys: q quit | l learn phone size | c clear | m mask")
+    print("Keys: q quit | l learn phone size | c clear | m mask | space talk (desk_brain)")
 
     try:
         while True:
@@ -185,6 +194,13 @@ def main():
                 confirmed = confirmer.update(cx, cy, need)
                 if confirmed is not None:
                     target = smoother.update(*confirmed)
+                    last_seen = time.time()
+                    if not present:
+                        present = True
+                        emit("phone_placed", x=target[0], y=target[1])
+            if present and time.time() - last_seen > LOST_AFTER_S:
+                present, last_sent = False, None
+                emit("phone_lost")
 
             for d in yolo:
                 x1, y1, x2, y2 = map(int, d["box_px"])
@@ -203,11 +219,13 @@ def main():
             if target is not None:
                 cv2.putText(frame, f"[{source}] target ({target[0]:.1f}, {target[1]:.1f}) cm",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                if (last_sent is None
+                following = state is None or state.tracking_enabled
+                if following and (last_sent is None
                         or abs(target[0] - last_sent[0]) > ptc.MOVE_TOLERANCE_CM
                         or abs(target[1] - last_sent[1]) > ptc.MOVE_TOLERANCE_CM):
                     last_sent = target
                     ptc.send_target(ser, *target)
+                    emit("phone_moved", x=target[0], y=target[1])
                     print(f"[{source}] target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
 
             cv2.imshow(win, frame)
@@ -217,6 +235,8 @@ def main():
             if key == ord("q"):
                 print(f"Final dark threshold: {dark} (set DARK_THRESHOLD = {dark} in phone_tracker_cv.py)")
                 break
+            elif key == ord(" "):
+                emit("listen_start")
             elif key == ord("m"):
                 show_mask = not show_mask
                 if not show_mask:
@@ -238,7 +258,7 @@ def main():
     finally:
         cap.release()
         cv2.destroyAllWindows()
-        if ser is not None:
+        if ser is not None and own_ser:
             ser.close()
 
 

@@ -308,11 +308,14 @@ class Brain:
     # ---- sustainability ----
     def act_energy_report(self):
         r = state.energy_report()
-        return (f"The coil has only been powered for {r['hours_charging']:.1f} of the last "
-                f"{r['hours_tracked']:.1f} hours, across {r['sessions']} charging sessions. "
-                f"Compared with a pad left on all the time, that's {r['idle_wh_saved']:.1f} watt-hours "
-                f"of idle power not wasted.")
 
+        def dur(h):
+            return f"{h * 60:.0f} minutes" if h < 1 else f"{h:.1f} hours"
+
+        n = r["sessions"]
+        return (f"The charger has only been powered for {dur(r['hours_charging'])} of the last "
+                f"{dur(r['hours_tracked'])}, across {n} charging session{'' if n == 1 else 's'}. "
+                f"A pad left on all the time would have wasted {r['idle_wh_saved']:.2f} watt-hours idling.")
 
 def main():
     import argparse

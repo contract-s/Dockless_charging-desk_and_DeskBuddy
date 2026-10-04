@@ -33,6 +33,7 @@ AGENT_PORT = 8001
 
 # ============================== BEHAVIOUR ==============================
 COMMAND_SERVER = ("127.0.0.1", 8765)   # fetch_agent.py talks to the desk here
+SPEAK_AGENT_REPLIES = True   # say ASI:One chat replies out loud too (fun in the demo)
 
 LOST_AFTER_S = 3.0           # phone unseen this long = picked up
 AUTO_MUSIC_ON_PLACE = True   # resume Spotify when the phone is set down
