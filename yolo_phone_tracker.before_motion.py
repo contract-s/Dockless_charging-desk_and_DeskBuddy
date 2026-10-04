@@ -1,16 +1,4 @@
 """
-yolo_then_dark_tracker.py
-
-EXACT copy of yolo_phone_tracker.py (screen-ON phones), plus one addition:
-if YOLO finds nothing in a frame, an OpenCV search looks for a black rectangle
-about the size of a phone (screen-OFF phones).
-
-Run:  python yolo_then_dark_tracker.py
-Keys: q quit | m show/hide the dark mask | "dark" slider = how dark counts as black
-Boxes: GREEN = YOLO phone (screen on), BLUE = black rectangle (screen off),
-       thin RED = black blob rejected (label says its size in cm and fill).
-
---- original docstring below ---
 yolo_phone_tracker.py
 
 Detects a phone in a webcam feed using YOLOv8's pretrained COCO model
@@ -63,16 +51,6 @@ CONFIRM_FRAMES = 2      # must be seen this many frames in a row, in one spot
 CONFIRM_RADIUS_CM = 4.0
 MISS_TOLERANCE = 2      # missed frames allowed before the streak resets
 CALIBRATION_FILE = "calibration.json"
-
-# --- Screen-OFF fallback (black rectangle), used only when YOLO finds nothing ---
-DARK_THRESHOLD = 70          # gray level (0-255) below which a pixel counts as black; slider tunes it
-DARK_MIN_CONTOUR_PX = 200    # ignore tiny blobs
-PHONE_LONG_CM = (11.0, 19.0) # a phone's long side, real cm
-PHONE_SHORT_CM = (5.0, 9.5)  # a phone's short side, real cm
-DARK_MIN_FILL = 0.75         # how rectangular the blob must be (blob area / rotated box area)
-DARK_CONFIRM_FRAMES = 4      # black rectangle must stay in one spot this many frames
-PROFILE_FILE = "phone_profile.json"   # if present (saved earlier with 'l' in the hybrid), use that size +/-15%
-PROFILE_TOL = 0.15
 
 # Real-world size in cm of the area you click during calibration.
 # Set to the full 24 x 18 in plexiglass pane (24 in along the camera's
@@ -254,62 +232,6 @@ class PositionSmoother:
 # Serial (optional — only used if SEND_SERIAL = True)
 # ---------------------------------------------------------------------------
  
-# ---------------------------------------------------------------------------
-# Screen-OFF fallback: black, phone-sized rectangle
-# ---------------------------------------------------------------------------
-
-def phone_size_limits():
-    """Size limits for the black rectangle: learned phone size if saved, else the defaults."""
-    if os.path.exists(PROFILE_FILE):
-        with open(PROFILE_FILE) as f:
-            p = json.load(f)
-        L, S = p["long_cm"], p["short_cm"]
-        return ((L * (1 - PROFILE_TOL), L * (1 + PROFILE_TOL)),
-                (S * (1 - PROFILE_TOL), S * (1 + PROFILE_TOL)), "learned")
-    return PHONE_LONG_CM, PHONE_SHORT_CM, "default"
-
-
-def pts_to_desk(H, pts):
-    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
-    return cv2.perspectiveTransform(pts, np.asarray(H, dtype=np.float64)).reshape(-1, 2)
-
-
-def find_dark_phone(frame, H, dark_thresh, long_lim, short_lim):
-    """Return (best, candidates, mask). best = dict(box, center_px, center_cm) or None."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    mask = (gray < dark_thresh).astype(np.uint8) * 255
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)))
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    best, best_fill, candidates = None, -1.0, []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < DARK_MIN_CONTOUR_PX:
-            continue
-        rect = cv2.minAreaRect(c)
-        box = cv2.boxPoints(rect)
-        box_cm = pts_to_desk(H, box)
-        s1 = float(np.linalg.norm(box_cm[0] - box_cm[1]))
-        s2 = float(np.linalg.norm(box_cm[1] - box_cm[2]))
-        long_, short_ = max(s1, s2), min(s1, s2)
-        rect_area = rect[1][0] * rect[1][1]
-        fill = area / rect_area if rect_area > 0 else 0.0
-        cx_cm, cy_cm = pts_to_desk(H, [rect[0]])[0]
-        ok = (long_lim[0] <= long_ <= long_lim[1]
-              and short_lim[0] <= short_ <= short_lim[1]
-              and fill >= DARK_MIN_FILL
-              and -PANE_MARGIN_CM <= cx_cm <= DESK_WIDTH_CM + PANE_MARGIN_CM
-              and -PANE_MARGIN_CM <= cy_cm <= DESK_DEPTH_CM + PANE_MARGIN_CM)
-        candidates.append((box.astype(int), f"{long_:.1f}x{short_:.1f}cm f{fill:.2f}", ok))
-        if ok and fill > best_fill:
-            best_fill = fill
-            best = dict(box=box.astype(int), center_px=rect[0],
-                        center_cm=(float(cx_cm), float(cy_cm)))
-    return best, candidates, mask
-
-
 def open_serial():
     import serial
     return serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
@@ -351,14 +273,6 @@ def main():
     model = YOLO(MODEL_NAME)
     smoother = PositionSmoother()
     confirmer = TargetConfirmer()
-    dark_confirmer = TargetConfirmer()      # separate streak for the black-rectangle fallback
-    long_lim, short_lim, size_src = phone_size_limits()
-    print(f"Black-rectangle size ({size_src}): long {long_lim[0]:.1f}-{long_lim[1]:.1f} cm, "
-          f"short {short_lim[0]:.1f}-{short_lim[1]:.1f} cm")
-    show_mask = False
-    if not args.no_display:
-        cv2.namedWindow("Phone Tracking")
-        cv2.createTrackbar("dark", "Phone Tracking", DARK_THRESHOLD, 255, lambda v: None)
  
     ser = open_serial() if SEND_SERIAL else None
     last_sent = None
@@ -373,10 +287,6 @@ def main():
             if not ok:
                 continue
  
-            dark_thresh = (max(1, cv2.getTrackbarPos("dark", "Phone Tracking"))
-                           if not args.no_display else DARK_THRESHOLD)
-            dark_mask = None
-
             results = model(frame, classes=[CELL_PHONE_CLASS_ID],
                              conf=CONFIDENCE_THRESHOLD, verbose=False)
  
@@ -386,32 +296,7 @@ def main():
             best = pick_phone(boxes, H, frame.shape) if len(boxes) > 0 else None
             if best is None:
                 confirmer.miss()
-                # ---- ELSE: YOLO found nothing -> look for a black, phone-sized rectangle ----
-                dark_best, dark_cands, dark_mask = find_dark_phone(frame, H, dark_thresh,
-                                                                   long_lim, short_lim)
-                if dark_best is None:
-                    dark_confirmer.miss()
-                else:
-                    dx, dy = dark_best["center_cm"]
-                    dark_confirmer.update(dx, dy)
-                    if dark_confirmer.streak >= DARK_CONFIRM_FRAMES:
-                        target_desk = smoother.update(dx, dy)
-                if not args.no_display:
-                    for box, label, ok_ in dark_cands:
-                        if ok_:
-                            continue
-                        cv2.polylines(frame, [box], True, (0, 0, 255), 1)
-                        cv2.putText(frame, label, tuple(box[0]), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.4, (0, 0, 255), 1)
-                    if dark_best is not None:
-                        dx, dy = dark_best["center_cm"]
-                        cv2.polylines(frame, [dark_best["box"]], True, (255, 128, 0), 2)
-                        cv2.putText(frame, f"screen off: ({dx:.1f}, {dy:.1f}) cm "
-                                           f"[{dark_confirmer.streak}/{DARK_CONFIRM_FRAMES}]",
-                                    tuple(dark_best["box"][1]), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.6, (255, 128, 0), 2)
             else:
-                dark_confirmer.miss()
                 (x1, y1, x2, y2), cx, cy, desk_x, desk_y = best
                 confirmed = confirmer.update(desk_x, desk_y)
                 if confirmed is not None:
@@ -445,16 +330,8 @@ def main():
                 cv2.putText(frame, f"FPS: {fps_value:.1f}", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
                 cv2.imshow("Phone Tracking", frame)
-                if show_mask and dark_mask is not None:
-                    cv2.imshow("Dark mask", dark_mask)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    print(f"Final dark threshold: {dark_thresh} (set DARK_THRESHOLD = {dark_thresh})")
+                if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
-                elif key == ord('m'):
-                    show_mask = not show_mask
-                    if not show_mask:
-                        cv2.destroyWindow("Dark mask")
  
     except KeyboardInterrupt:
         pass

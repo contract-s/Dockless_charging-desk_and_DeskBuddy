@@ -67,7 +67,7 @@ MOVE_TOLERANCE_CM = 1.5
 
 # If a serial connection to the motion controller is available, set this to
 # the right port (e.g. "/dev/ttyUSB0" or "COM5") and set SEND_SERIAL = True.
-SEND_SERIAL = False
+SEND_SERIAL = True
 SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 115200
 
@@ -233,15 +233,16 @@ class PositionSmoother:
 # ---------------------------------------------------------------------------
  
 def open_serial():
-    import serial
-    return serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
- 
- 
+    import motion
+    return motion.start(port="auto", use_limit_switches=False)   # True if you wired limit switches
+
+
 def send_target(ser, x_cm, y_cm):
     if ser is None:
         return
-    ser.write(f"{x_cm:.1f},{y_cm:.1f}\n".encode())
- 
+    ser.goto_desk(x_cm, y_cm)       # phone cm -> motor steps -> ESP32 (see motion.py)
+
+
 # ---------------------------------------------------------------------------
 # Main detection loop
 # ---------------------------------------------------------------------------

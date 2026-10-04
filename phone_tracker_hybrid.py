@@ -39,16 +39,10 @@ WEAK_CONF = 0.08
 YOLO_LONG_CM = (6.0, 30.0)
 YOLO_SHORT_CM = (3.0, 22.0)
 
-# Same filters as yolo_phone_tracker.py (the ones that work well for lit phones)
-MIN_BOX_FRAC = 0.01
-MAX_BOX_FRAC = 0.20
-MIN_ASPECT = 1.2
-MAX_ASPECT = 3.2
-CONFIRM_YOLO = 2
+CONFIRM_YOLO = 3
 CONFIRM_CV_ONLY = 12
-CONFIRM_RADIUS_CM = 5.0
-MISS_TOLERANCE = 8          # frames a detection may drop out before the streak resets
-HOLD_FRAMES = 15            # keep reporting the last confirmed target this long after losing it
+CONFIRM_RADIUS_CM = 4.0
+MISS_TOLERANCE = 3
 
 PROFILE_FILE = "phone_profile.json"
 PROFILE_TOL = 0.12
@@ -78,30 +72,20 @@ def yolo_detections(model, frame, H):
         center_cm = ptc.pts_to_desk(H, np.array([[(x1 + x2) / 2, (y1 + y2) / 2]]))[0]
         in_pane = (-ptc.PANE_MARGIN_CM <= center_cm[0] <= ptc.DESK_WIDTH_CM + ptc.PANE_MARGIN_CM
                    and -ptc.PANE_MARGIN_CM <= center_cm[1] <= ptc.DESK_DEPTH_CM + ptc.PANE_MARGIN_CM)
-        fh, fw = frame.shape[:2]
-        bw, bh = x2 - x1, y2 - y1
-        conf = float(b.conf[0])
-        frac = (bw * bh) / (fw * fh) if bw > 0 and bh > 0 else 0
-        aspect = max(bw, bh) / max(1e-6, min(bw, bh))
-        # lit-phone rule: identical to yolo_phone_tracker.pick_phone
-        lit_ok = (conf >= STRONG_CONF and in_pane
-                  and MIN_BOX_FRAC <= frac <= MAX_BOX_FRAC
-                  and MIN_ASPECT <= aspect <= MAX_ASPECT)
-        cm_ok = (YOLO_LONG_CM[0] <= long_ <= YOLO_LONG_CM[1]
-                 and YOLO_SHORT_CM[0] <= short_ <= YOLO_SHORT_CM[1] and in_pane)
-        if lit_ok or cm_ok:
-            dets.append(dict(conf=conf, box_px=(x1, y1, x2, y2), strong_ok=lit_ok,
+        if (YOLO_LONG_CM[0] <= long_ <= YOLO_LONG_CM[1]
+                and YOLO_SHORT_CM[0] <= short_ <= YOLO_SHORT_CM[1] and in_pane):
+            dets.append(dict(conf=float(b.conf[0]), box_px=(x1, y1, x2, y2),
                              center_cm=(float(center_cm[0]), float(center_cm[1]))))
         else:
-            why = "outside pane" if not in_pane else "size/shape"
+            why = "outside pane" if not in_pane else "size"
             LAST_REJECTED.append(((x1, y1, x2, y2),
-                                  f"yolo REJECT({why}) {conf:.2f} {long_:.1f}x{short_:.1f}cm"))
+                                  f"yolo REJECT({why}) {float(b.conf[0]):.2f} {long_:.1f}x{short_:.1f}cm"))
     return dets
 
 
 def decide(yolo, cv_best, profile_learned, allow_unlearned=ALLOW_CV_ONLY_WITHOUT_PROFILE):
     """Return (center_cm, source, frames_needed) or None."""
-    strong = [d for d in yolo if d.get("strong_ok")]
+    strong = [d for d in yolo if d["conf"] >= STRONG_CONF]
     if strong:
         d = max(strong, key=lambda d: d["conf"])
         return d["center_cm"], "yolo", CONFIRM_YOLO
@@ -176,20 +160,18 @@ def main():
     confirmer, smoother = Confirmer(), ptc.PositionSmoother()
     ser = ptc.open_serial() if ptc.SEND_SERIAL else None
     last_sent, show_mask = None, False
-    held, hold_left = None, 0
     win = "Phone Tracking (hybrid)"
 
     cv2.namedWindow(win)
     cv2.createTrackbar("dark", win, ptc.DARK_THRESHOLD, 255, lambda v: None)
     print("Learned phone size:", profile if profile else "none (CV-only path disabled)")
-    print("Keys: q quit | l learn phone size | c clear | m mask | s save debug snapshot")
+    print("Keys: q quit | l learn phone size | c clear | m mask")
 
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 continue
-            raw_frame = frame.copy()
             dark = max(1, cv2.getTrackbarPos("dark", win))
             yolo = yolo_detections(model, frame, H)
             cv_best, cands, mask = ptc.find_phone(frame, H, dark)
@@ -203,14 +185,10 @@ def main():
                 confirmed = confirmer.update(cx, cy, need)
                 if confirmed is not None:
                     target = smoother.update(*confirmed)
-                    held, hold_left = target, HOLD_FRAMES
-            if target is None and held is not None and hold_left > 0:
-                hold_left -= 1
-                target, source = held, "hold"
 
             for d in yolo:
                 x1, y1, x2, y2 = map(int, d["box_px"])
-                col = (0, 200, 0) if d.get("strong_ok") else (0, 165, 255)
+                col = (0, 200, 0) if d["conf"] >= STRONG_CONF else (0, 165, 255)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), col, 1)
                 cv2.putText(frame, f"yolo {d['conf']:.2f}", (x1, y2 + 14),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
@@ -222,12 +200,6 @@ def main():
                 col = (0, 255, 0) if accepted else (0, 0, 255)
                 cv2.polylines(frame, [box], True, col, 2)
                 cv2.putText(frame, label, tuple(box[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
-            if target is None:
-                info = (f"searching  yolo:{len(yolo)} cv:{1 if cv_best else 0} "
-                        f"streak:{confirmer.streak} misses:{confirmer.misses}")
-                if choice is not None:
-                    info += f" via {choice[1]} need {choice[2]}"
-                cv2.putText(frame, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
             if target is not None:
                 cv2.putText(frame, f"[{source}] target ({target[0]:.1f}, {target[1]:.1f}) cm",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -238,7 +210,6 @@ def main():
                     ptc.send_target(ser, *target)
                     print(f"[{source}] target -> x={target[0]:.1f}cm  y={target[1]:.1f}cm")
 
-            overlay = frame.copy()
             cv2.imshow(win, frame)
             if show_mask:
                 cv2.imshow("Dark mask", mask)
@@ -258,13 +229,6 @@ def main():
                     print("Learned phone size:", profile)
                 else:
                     print("Nothing to learn from: no green CV box right now.")
-            elif key == ord("s"):
-                import time as _t
-                tag = _t.strftime("%H%M%S")
-                cv2.imwrite(f"snap_{tag}_overlay.png", overlay)
-                cv2.imwrite(f"snap_{tag}_mask.png", mask)
-                cv2.imwrite(f"snap_{tag}_raw.png", raw_frame)
-                print(f"saved snap_{tag}_raw.png / _overlay.png / _mask.png (dark={dark}, adaptive={ptc.ADAPTIVE})")
             elif key == ord("c"):
                 profile = None
                 clear_profile()
